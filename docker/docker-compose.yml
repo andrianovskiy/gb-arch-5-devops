@@ -1,0 +1,8 @@
+version: '3.8'
+services:
+  check-cms:
+    build:
+      context: ../
+      dockerfile: ./docker/Dockerfile
+    ports:
+      - 8080:8080
