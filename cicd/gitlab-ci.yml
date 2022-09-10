@@ -1,0 +1,81 @@
+image: docker:dind
+services:
+  - docker:dind
+
+variables:
+  IMAGE_NAME: $DOCKERHUB_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  DOCKER_DRIVER: overlay
+  SPRING_PROFILES_ACTIVE: test
+  CI_DEBUG_TRACE: "true"
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  KUBECONFIG: /etc/deploy/config
+
+stages:
+  - build
+  - test
+  - build-image
+  - image-push
+  - deploy
+
+build:
+  stage: build
+  image: gradle
+  only:
+    - master
+    - merge_requests
+  script:
+    - gradle --build-cache build
+  artifacts:
+    paths:
+      - build/libs/*.jar
+    expire_in: 1 week
+
+sonarqube-check:
+  stage: test
+  image: gradle:7.2.0-jdk11
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  script: gradle sonarqube
+  allow_failure: true
+  only:
+    - master # or the name of your main branch
+
+unit-test:
+  stage: test
+  image: gradle
+  only:
+    - master
+  allow_failure: true
+  script:
+    - gradle test || true
+
+image-push-to-dockerhub:
+  stage: image-push
+  only:
+    - master
+  before_script:
+    - docker login -u "$REGISTRY_DOCKER_HUB_USER" -p "$REGISTRY_DOCKER_HUB_PASSWORD" $REGISTRY_DOCKER_HUB
+  script:
+    - docker build --pull -t $DOCKERHUB_REGISTRY/$IMAGE_NAME .
+    - docker push $DOCKERHUB_REGISTRY/$IMAGE_NAME
+
+deploy-to-k8:
+  stage: deploy
+  image: lwolf/helm-kubectl-docker:v1.18.18-v3.5.4
+  only:
+    - master
+  before_script:
+    - mkdir -p /etc/deploy
+    - ls
+    - cp ./k8_deploy/ca.pem /etc/deploy
+    - echo ${KUBE_CONFIG} | base64 -d > ${KUBECONFIG}
+    - kubectl config use-context ${KUBE_CONTEXT}
+  script:
+    - helm upgrade --install mail-verification ./helm --set namespace=${NAMESPACE}
+  variables:
+    NAMESPACE: 'default'
